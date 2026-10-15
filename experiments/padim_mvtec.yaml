@@ -1,0 +1,9 @@
+# Experiment Configuration: PaDiM on MVTec AD
+model: padim
+category: bottle
+data_root: data/raw/mvtec
+batch_size: 16
+device: cuda
+model_kwargs:
+  backbone: wide_resnet50_2
+  d_reduced: 550

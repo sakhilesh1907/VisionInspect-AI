@@ -1,0 +1,11 @@
+# Experiment Configuration: PatchCore on MVTec AD
+model: patchcore
+category: bottle
+data_root: data/raw/mvtec
+batch_size: 16
+device: cuda
+model_kwargs:
+  backbone: wide_resnet50_2
+  layers: [2, 3]
+  coreset_ratio: 0.1
+  k_neighbours: 9

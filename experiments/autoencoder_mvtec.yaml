@@ -1,0 +1,12 @@
+# Experiment Configuration: Convolutional Autoencoder on MVTec AD
+model: autoencoder
+category: bottle
+data_root: data/raw/mvtec
+batch_size: 16
+epochs: 50
+lr: 0.001
+device: cuda
+model_kwargs:
+  base_channels: 64
+  bottleneck_dim: 256
+  ssim_weight: 0.5
