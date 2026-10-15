@@ -347,7 +347,7 @@ def build_pdf(md_file: Path, output_pdf: Path):
 
     # Build document
     doc.build(story, canvasmaker=NumberedCanvas)
-    print(f"✅ PDF successfully generated at: {output_pdf.resolve()}")
+    print(f"[SUCCESS] PDF successfully generated at: {output_pdf.resolve()}")
 
 
 if __name__ == "__main__":

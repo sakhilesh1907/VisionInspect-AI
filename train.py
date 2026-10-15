@@ -54,7 +54,8 @@ logger = get_logger("train")
 @click.option("--device",   default="cuda",              show_default=True, help="cuda | cpu")
 @click.option("--few-shot-normal", default=None, type=int, help="Limit normal training images")
 @click.option("--experiment-name", default="visioninspect", show_default=True)
-def main(model, category, data_root, config, epochs, lr, batch, workers, output, device, few_shot_normal, experiment_name):
+@click.option("--use-mlflow", is_flag=True, default=False, help="Enable MLflow experiment tracking")
+def main(model, category, data_root, config, epochs, lr, batch, workers, output, device, few_shot_normal, experiment_name, use_mlflow):
     """Train a VisionInspect AI anomaly detection model."""
 
     # ---- Load YAML config (overrides CLI defaults) ----
@@ -101,17 +102,22 @@ def main(model, category, data_root, config, epochs, lr, batch, workers, output,
     anomaly_model = build_model(model_name, **model_kwargs)
 
     # ---- MLflow Tracking ----
-    if HAS_MLFLOW:
-        mlflow.set_experiment(experiment_name)
-        mlflow.start_run(run_name=f"{model_name}_{category}")
-        mlflow.log_params({
-            "model": model_name,
-            "category": category,
-            "epochs": epochs,
-            "lr": lr,
-            "batch_size": batch,
-            "device": str(device),
-        })
+    tracking_active = False
+    if HAS_MLFLOW and use_mlflow:
+        try:
+            mlflow.set_experiment(experiment_name)
+            mlflow.start_run(run_name=f"{model_name}_{category}")
+            mlflow.log_params({
+                "model": model_name,
+                "category": category,
+                "epochs": epochs,
+                "lr": lr,
+                "batch_size": batch,
+                "device": str(device),
+            })
+            tracking_active = True
+        except Exception as e:
+            logger.warning(f"MLflow initialization skipped: {e}")
 
     # ---- Training ----
     output_dir = Path(output) / model_name / category
@@ -124,8 +130,11 @@ def main(model, category, data_root, config, epochs, lr, batch, workers, output,
         save_path = str(output_dir / "model.pt")
         anomaly_model.save(save_path)
         logger.info(f"Model saved to {save_path}")
-        if HAS_MLFLOW:
-            mlflow.log_artifact(save_path)
+        if tracking_active:
+            try:
+                mlflow.log_artifact(save_path)
+            except Exception:
+                pass
 
     else:
         # Gradient-based: CAE, StudentTeacher
@@ -162,17 +171,26 @@ def main(model, category, data_root, config, epochs, lr, batch, workers, output,
 
             if epoch % 10 == 0 or epoch == epochs:
                 logger.info(f"Epoch {epoch:3d}/{epochs}  loss={avg_loss:.6f}")
-                if HAS_MLFLOW:
-                    mlflow.log_metric("train_loss", avg_loss, step=epoch)
+                if tracking_active:
+                    try:
+                        mlflow.log_metric("train_loss", avg_loss, step=epoch)
+                    except Exception:
+                        pass
 
         save_path = str(output_dir / "model.pt")
         torch.save(anomaly_model.state_dict(), save_path)
         logger.info(f"Model saved to {save_path}")
-        if HAS_MLFLOW:
-            mlflow.log_artifact(save_path)
+        if tracking_active:
+            try:
+                mlflow.log_artifact(save_path)
+            except Exception:
+                pass
 
-    if HAS_MLFLOW:
-        mlflow.end_run()
+    if tracking_active:
+        try:
+            mlflow.end_run()
+        except Exception:
+            pass
 
     logger.info(f"Training complete. Model at: {save_path}")
 

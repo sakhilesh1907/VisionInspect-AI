@@ -213,3 +213,16 @@ class ConvAutoencoder(nn.Module):
         """Return the bottleneck representation."""
         with torch.no_grad():
             return self.encoder(x)
+
+    # ------------------------------------------------------------------
+    def load_state_dict(self, state_dict, strict: bool = True):
+        """Backwards-compatible loader for checkpoints saved with or without inner .net."""
+        remapped = {}
+        for k, v in state_dict.items():
+            if k.startswith("encoder.") and not k.startswith("encoder.net."):
+                k = "encoder.net." + k[len("encoder."):]
+            elif k.startswith("decoder.") and not k.startswith("decoder.net."):
+                k = "decoder.net." + k[len("decoder."):]
+            remapped[k] = v
+        return super().load_state_dict(remapped, strict=strict)
+

@@ -131,9 +131,17 @@ class ReviewQueue:
         """Return all items awaiting review."""
         return [item for item in self._items.values() if item.reviewer_label is None]
 
+    def list_pending(self) -> List[ReviewItem]:
+        """Alias for pending()."""
+        return self.pending()
+
     def reviewed(self) -> List[ReviewItem]:
         """Return all reviewed items."""
         return [item for item in self._items.values() if item.reviewer_label is not None]
+
+    def list_reviewed(self) -> List[ReviewItem]:
+        """Alias for reviewed()."""
+        return self.reviewed()
 
     # ------------------------------------------------------------------
     def export_labels(self, output_path: str = "results/reviewed_labels.json") -> Path:

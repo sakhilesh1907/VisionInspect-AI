@@ -52,12 +52,48 @@ MODEL_CACHE: Dict[str, Any] = {}
 
 MODELS = ["autoencoder", "padim", "patchcore"]
 CATEGORIES = ["bottle", "cable", "capsule", "carpet", "grid", "hazelnut", "leather",
-              "metal_nut", "pill", "screw", "tile", "wood", "zipper"]
-DEFAULT_THRESHOLD = 2.59
-DEFAULT_T_NORMAL = 2.5849
-DEFAULT_T_ANOMALY = 2.6085
+              "metal_nut", "pill", "screw", "tile", "toothbrush", "transistor", "wood", "zipper"]
+DEFAULT_THRESHOLDS = {
+    "bottle": {"threshold": 2.445, "t_normal": 2.440, "t_anomaly": 2.450},
+    "cable": {"threshold": 1.34, "t_normal": 1.332, "t_anomaly": 1.350},
+    "capsule": {"threshold": 1.50, "t_normal": 1.48, "t_anomaly": 1.53},
+    "carpet": {"threshold": 1.80, "t_normal": 1.76, "t_anomaly": 1.84},
+    "grid": {"threshold": 1.60, "t_normal": 1.55, "t_anomaly": 1.65},
+    "hazelnut": {"threshold": 1.40, "t_normal": 1.37, "t_anomaly": 1.44},
+    "leather": {"threshold": 1.30, "t_normal": 1.28, "t_anomaly": 1.33},
+    "metal_nut": {"threshold": 1.45, "t_normal": 1.42, "t_anomaly": 1.49},
+    "pill": {"threshold": 1.55, "t_normal": 1.51, "t_anomaly": 1.59},
+    "screw": {"threshold": 1.70, "t_normal": 1.66, "t_anomaly": 1.75},
+    "tile": {"threshold": 1.42, "t_normal": 1.39, "t_anomaly": 1.46},
+    "toothbrush": {"threshold": 1.35, "t_normal": 1.32, "t_anomaly": 1.38},
+    "transistor": {"threshold": 1.48, "t_normal": 1.45, "t_anomaly": 1.52},
+    "wood": {"threshold": 1.65, "t_normal": 1.60, "t_anomaly": 1.70},
+    "zipper": {"threshold": 1.52, "t_normal": 1.49, "t_anomaly": 1.56},
+}
+
+DEFAULT_THRESHOLD = 2.445
+DEFAULT_T_NORMAL = 2.440
+DEFAULT_T_ANOMALY = 2.450
 
 EXPORT_DIR = Path("results/exports")
+
+
+def get_category_samples(category: str) -> List[str]:
+    """Dynamically get test samples (defects + normal) for the chosen category."""
+    cat_dir = Path("data/raw/mvtec") / category / "test"
+    samples = []
+    if cat_dir.exists():
+        # Add defect samples first
+        for defect_folder in sorted(cat_dir.iterdir()):
+            if defect_folder.is_dir() and defect_folder.name != "good":
+                for img_p in sorted(defect_folder.glob("*.png"))[:3]:
+                    samples.append(str(img_p))
+        # Add normal samples
+        good_folder = cat_dir / "good"
+        if good_folder.exists():
+            for img_p in sorted(good_folder.glob("*.png"))[:2]:
+                samples.append(str(img_p))
+    return samples
 
 
 def get_cached_model(model_name: str, category: str, device: str = "cpu"):
@@ -129,7 +165,26 @@ CSS = """
 .vi-gauge .lbl{display:flex;justify-content:space-between;font-size:.74em;color:var(--vi-muted);margin-top:6px;}
 .vi-note{font-size:.88em;color:var(--vi-muted);}
 .vi-footer{text-align:center;color:var(--vi-muted);font-size:.8em;margin-top:14px;}
+
+/* Fix table header menu collision (Picture 3) */
+.gradio-container [data-testid="dataframe"], .gradio-container .table-wrap {
+  position: relative !important;
+  z-index: 50 !important;
+  margin-bottom: 24px !important;
+}
+.gradio-container [data-testid="dataframe"] .menu,
+.gradio-container table th button,
+.gradio-container .table-menu,
+.gradio-container [role="menu"] {
+  z-index: 99999 !important;
+}
+.gradio-container [data-testid="gallery"], .gradio-container .gallery {
+  position: relative !important;
+  z-index: 1 !important;
+  margin-top: 18px !important;
+}
 """
+
 
 
 def _banner(kind: str, text: str, sub: str = "") -> str:
@@ -222,8 +277,29 @@ def verdict_banner(verdict: str, n_regions: int) -> str:
 # Core inference (shared by single + batch)
 # ---------------------------------------------------------------------------
 
-def run_inference(img: Image.Image, model_name, category, threshold, device,
+def run_inference(img, model_name, category, threshold, device,
                   conformal, t_n, t_a, box_sens, min_area, overlay_alpha) -> Optional[Dict[str, Any]]:
+    if img is None:
+        return None
+
+    if isinstance(img, str):
+        if not Path(img).exists():
+            return None
+        img = Image.open(img)
+    elif isinstance(img, dict):
+        p = img.get("path") or img.get("image", {}).get("path")
+        if p and Path(p).exists():
+            img = Image.open(p)
+        else:
+            return None
+    elif isinstance(img, np.ndarray):
+        img = Image.fromarray(img)
+    elif not isinstance(img, Image.Image):
+        try:
+            img = Image.open(str(img))
+        except Exception:
+            return None
+
     model_info = get_cached_model(model_name, category, device)
     if model_info is None:
         return None
@@ -546,12 +622,6 @@ def refresh_benchmarks(run):
 # ---------------------------------------------------------------------------
 
 def build_app():
-    sample_images = []
-    base_mvtec = Path("data/raw/mvtec")
-    if base_mvtec.exists():
-        for p in sorted(base_mvtec.glob("*/test/*/*.png"))[:12]:
-            sample_images.append(str(p))
-
     with gr.Blocks(title="VisionInspect AI — Industrial Inspection Dashboard") as demo:
         gr.HTML(f"<style>{CSS}</style>")
         history_state = gr.State([])
@@ -569,7 +639,7 @@ def build_app():
             with gr.Tab("🔬 Live Inspection"):
                 with gr.Row():
                     with gr.Column(scale=1):
-                        img_input = gr.Image(type="pil", label="Product image", sources=["upload", "clipboard", "webcam"])
+                        img_input = gr.Image(type="pil", label="Product image", sources=["upload", "clipboard"])
                         with gr.Row():
                             model_choice = gr.Dropdown(MODELS, value="autoencoder", label="Model")
                             category_choice = gr.Dropdown(CATEGORIES, value="bottle", label="Category")
@@ -599,8 +669,17 @@ def build_app():
                             inspect_btn = gr.Button("⚡ Run Defect Inspection", variant="primary", size="lg", scale=3)
                             clear_btn = gr.Button("🧹 Clear", scale=1)
 
-                        if sample_images:
-                            gr.Examples(examples=sample_images, inputs=img_input, label="Samples (click to load)")
+                        gr.Markdown("##### 🖼️ Category Test Specimens (click to load)")
+                        sample_gallery = gr.Gallery(
+                            value=get_category_samples("bottle"),
+                            show_label=False,
+                            columns=4,
+                            rows=2,
+                            height=200,
+                            allow_preview=False,
+                            interactive=False,
+                            elem_classes=["sample-picker-gallery"]
+                        )
 
                     with gr.Column(scale=2):
                         verdict_html = gr.HTML(IDLE_BANNER)
@@ -642,8 +721,39 @@ def build_app():
                 # Re-run when the sample is picked
                 img_input.upload(inspect_product, inputs=inspect_inputs, outputs=inspect_outputs)
 
-                for dd in (model_choice, category_choice):
-                    dd.change(model_status, [model_choice, category_choice], model_status_md)
+                # When user clicks a specimen in the category gallery, load into input and run inspection
+                def _on_sample_select(evt: gr.SelectData):
+                    val = evt.value
+                    if isinstance(val, dict):
+                        path = val.get("image", {}).get("path") or val.get("image") or val.get("path")
+                    else:
+                        path = val
+                    return path
+
+                sample_gallery.select(_on_sample_select, outputs=img_input).then(
+                    inspect_product, inputs=inspect_inputs, outputs=inspect_outputs
+                )
+
+                # Dynamically update samples and thresholds when category changes
+                def _on_cat_change(cat, model):
+                    new_samples = get_category_samples(cat)
+                    status = model_status(model, cat)
+                    cal = DEFAULT_THRESHOLDS.get(cat, {"threshold": 1.5, "t_normal": 1.45, "t_anomaly": 1.55})
+                    return (
+                        gr.update(value=new_samples),
+                        status,
+                        cal["threshold"],
+                        cal["t_normal"],
+                        cal["t_anomaly"]
+                    )
+
+                category_choice.change(
+                    _on_cat_change,
+                    inputs=[category_choice, model_choice],
+                    outputs=[sample_gallery, model_status_md, thresh_slider, t_norm_slider, t_anom_slider]
+                )
+
+                model_choice.change(model_status, [model_choice, category_choice], model_status_md)
                 auto_thr_btn.click(auto_threshold, [model_choice, category_choice], [thresh_slider, auto_thr_md])
 
                 def _clear():
@@ -669,7 +779,8 @@ def build_app():
                     with gr.Column(scale=2):
                         batch_summary = gr.HTML("")
                         batch_df = gr.Dataframe(headers=BATCH_COLS, interactive=False, wrap=True)
-                        batch_gallery = gr.Gallery(label="Localisation results", columns=4, height="auto")
+                        gr.Markdown("#### 🖼️ Defect Localisation Gallery")
+                        batch_gallery = gr.Gallery(show_label=False, columns=4, height="auto")
                 batch_btn.click(batch_inspect,
                                 [batch_files, model_choice, category_choice, thresh_slider, device_choice,
                                  conformal_check, t_norm_slider, t_anom_slider, box_slider, area_slider],

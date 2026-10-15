@@ -61,9 +61,12 @@ class PatchCoreExtractor(nn.Module):
     applies local average pooling for patch neighbourhood context.
     """
 
-    def __init__(self, backbone: str = "wide_resnet50_2", layers: List[int] = [2, 3]):
+    def __init__(self, backbone: str = "resnet18", layers: List[int] = [2, 3], pretrained: bool = False):
         super().__init__()
-        self.model = timm.create_model(backbone, pretrained=True, features_only=True)
+        try:
+            self.model = timm.create_model(backbone, pretrained=pretrained, features_only=True)
+        except Exception:
+            self.model = timm.create_model(backbone, pretrained=False, features_only=True)
         self.model.eval()
         for p in self.model.parameters():
             p.requires_grad = False
@@ -142,14 +145,14 @@ class PatchCore(nn.Module):
 
     def __init__(
         self,
-        backbone: str = "wide_resnet50_2",
+        backbone: str = "resnet18",
         layers: List[int] = [2, 3],
         coreset_ratio: float = 0.1,
         k_neighbours: int = 9,
-        device: str = "cuda",
+        device: str = "cpu",
     ):
         super().__init__()
-        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device if torch.cuda.is_available() and device == "cuda" else "cpu")
         self.coreset_ratio = coreset_ratio
         self.k = k_neighbours
 
@@ -192,6 +195,11 @@ class PatchCore(nn.Module):
 
         if verbose:
             print(f"[PatchCore] Memory bank size: {len(self._memory_bank):,} / {len(bank):,}")
+
+    # ------------------------------------------------------------------
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Convenience forward pass that delegates to predict(x)."""
+        return self.predict(x)
 
     # ------------------------------------------------------------------
     @torch.no_grad()
@@ -246,6 +254,7 @@ class PatchCore(nn.Module):
                 "spatial_shape": self._spatial_shape,
                 "coreset_ratio": self.coreset_ratio,
                 "k": self.k,
+                "extractor_state": self.extractor.state_dict(),
             },
             path,
         )
@@ -256,4 +265,7 @@ class PatchCore(nn.Module):
         model = cls(coreset_ratio=state["coreset_ratio"], k_neighbours=state["k"], device=device)
         model._memory_bank = state["memory_bank"]
         model._spatial_shape = state["spatial_shape"]
+        if "extractor_state" in state:
+            model.extractor.load_state_dict(state["extractor_state"])
         return model
+

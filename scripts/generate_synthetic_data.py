@@ -176,7 +176,7 @@ def create_synthetic_mvtec_category(
         defective.save(test_def2 / f"{i:03d}.png")
         mask.save(gt_def2 / f"{i:03d}_mask.png")
 
-    print(f"  ✓ {category}: {n_train} train images, {n_test_good} test good, {n_test_defects * 2} defects.")
+    print(f"  [OK] {category}: {n_train} train images, {n_test_good} test good, {n_test_defects * 2} defects.")
 
 
 @click.command()
@@ -189,7 +189,7 @@ def main(category, all_categories, n_train, base_dir):
     print(f"Generating datasets for: {cats}")
     for c in cats:
         create_synthetic_mvtec_category(base_dir=base_dir, category=c, n_train=n_train)
-    print("\n✅ Dataset generation complete!")
+    print("\n[SUCCESS] Dataset generation complete!")
 
 
 if __name__ == "__main__":

@@ -50,12 +50,15 @@ class FeatureExtractor(nn.Module):
         "efficientnet_b4": ["blocks.1", "blocks.2", "blocks.4"],
     }
 
-    def __init__(self, backbone: str = "wide_resnet50_2", layer_names: Optional[List[str]] = None):
+    def __init__(self, backbone: str = "resnet18", layer_names: Optional[List[str]] = None, pretrained: bool = False):
         super().__init__()
         self.backbone_name = backbone
         self.layer_names = layer_names or self.LAYER_NAMES.get(backbone, ["layer1", "layer2", "layer3"])
 
-        self.model = timm.create_model(backbone, pretrained=True, features_only=True)
+        try:
+            self.model = timm.create_model(backbone, pretrained=pretrained, features_only=True)
+        except Exception:
+            self.model = timm.create_model(backbone, pretrained=False, features_only=True)
         self.model.eval()
         for p in self.model.parameters():
             p.requires_grad = False
@@ -88,12 +91,12 @@ class PaDiM(nn.Module):
 
     def __init__(
         self,
-        backbone: str = "wide_resnet50_2",
-        d_reduced: int = 550,
-        device: str = "cuda",
+        backbone: str = "resnet18",
+        d_reduced: int = 100,
+        device: str = "cpu",
     ):
         super().__init__()
-        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device if torch.cuda.is_available() and device == "cuda" else "cpu")
         self.d_reduced = d_reduced
 
         self.extractor = FeatureExtractor(backbone).to(self.device)
@@ -162,19 +165,24 @@ class PaDiM(nn.Module):
         # Mean per patch position: (P, D)
         mean = feats.mean(dim=0).T  # (P, D)
 
-        # Covariance per patch position: (P, D, D)
+        # Covariance per patch position: (P, D, D) memory-efficient chunked computation
         feats_c = feats - feats.mean(dim=0, keepdim=True)  # centred
-        cov = torch.einsum("ndp,nep->pde", feats_c, feats_c) / (N - 1)  # (P, D, D)
-
-        # Regularise diagonal for numerical stability
-        reg = 0.01 * torch.eye(D).unsqueeze(0)  # (1, D, D)
-        cov += reg
+        cov = torch.empty((n_patches, D, D), dtype=torch.float32)
+        reg = 0.01 * torch.eye(D)
+        for p in range(n_patches):
+            fp = feats_c[:, :, p]  # (N, D)
+            cov[p] = (fp.T @ fp) / max(1, N - 1) + reg
 
         # Invert covariance matrices in batch
         cov_inv = torch.linalg.inv(cov)  # (P, D, D)
 
         self._mean = mean       # (P, D)
         self._cov_inv = cov_inv  # (P, D, D)
+
+    # ------------------------------------------------------------------
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Convenience forward pass that delegates to predict(x)."""
+        return self.predict(x)
 
     # ------------------------------------------------------------------
     @torch.no_grad()
@@ -235,6 +243,7 @@ class PaDiM(nn.Module):
                 "spatial_shape": self._spatial_shape,
                 "backbone": self.extractor.backbone_name,
                 "d_reduced": self.d_reduced,
+                "extractor_state": self.extractor.state_dict(),
             },
             path,
         )
@@ -249,4 +258,6 @@ class PaDiM(nn.Module):
         model._rnd_idx = state["rnd_idx"]
         model._feat_dim = state["feat_dim"]
         model._spatial_shape = state["spatial_shape"]
+        if "extractor_state" in state:
+            model.extractor.load_state_dict(state["extractor_state"])
         return model
