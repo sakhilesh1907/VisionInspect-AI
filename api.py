@@ -33,6 +33,12 @@ from data.transforms import get_val_transforms, denormalize
 from models import build_model
 from localization.anomaly_map import AnomalyMapProcessor
 from human_review.review_queue import ReviewQueue, ReviewItem
+from utils.amd_client import (
+    check_amd_status,
+    diagnose_defect_vlm,
+    chat_operator_copilot,
+    generate_shift_qa_report,
+)
 
 # ---------------------------------------------------------------------------
 # App Initialization & State
@@ -513,6 +519,84 @@ def get_telemetry():
             "power_efficiency": "3.4x higher inferences/Watt",
         }
     }
+
+
+# ---------------------------------------------------------------------------
+# AMD Token Factory Cloud AI Endpoints
+# ---------------------------------------------------------------------------
+@app.get("/api/amd/status")
+def get_amd_status_endpoint():
+    """Verify live connectivity and list models on AMD Token Factory."""
+    return check_amd_status()
+
+
+@app.post("/api/amd/diagnose")
+async def amd_diagnose_endpoint(
+    image_b64: str = Form(...),
+    category: str = Form("bottle"),
+    anomaly_score: float = Form(2.5),
+    verdict: str = Form("DEFECT"),
+    regions_json: Optional[str] = Form(None),
+    notes: Optional[str] = Form("")
+):
+    """Run VLM visual diagnosis on an inspected product image using AMD Token Factory."""
+    regions = None
+    if regions_json:
+        try:
+            regions = json.loads(regions_json)
+        except Exception:
+            regions = None
+    try:
+        diagnosis = diagnose_defect_vlm(
+            image_b64=image_b64,
+            category=category,
+            anomaly_score=anomaly_score,
+            verdict=verdict,
+            regions=regions,
+            custom_notes=notes or ""
+        )
+        return diagnosis
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/amd/copilot")
+async def amd_copilot_endpoint(
+    query: str = Form(...),
+    category: str = Form("bottle"),
+    anomaly_score: Optional[float] = Form(None),
+    history_json: Optional[str] = Form(None)
+):
+    """Operator Copilot chat endpoint for Human Review Queue triage."""
+    history = None
+    if history_json:
+        try:
+            history = json.loads(history_json)
+        except Exception:
+            history = None
+    try:
+        result = chat_operator_copilot(
+            user_query=query,
+            category=category,
+            anomaly_score=anomaly_score,
+            history=history
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/amd/report")
+async def amd_report_endpoint(category: str = Form("bottle")):
+    """Generate executive QA shift audit report using AMD Token Factory LLMs."""
+    try:
+        report = generate_shift_qa_report(
+            inspection_stats=INSPECTION_STATS,
+            category=category
+        )
+        return report
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

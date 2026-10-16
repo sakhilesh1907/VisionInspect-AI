@@ -133,5 +133,26 @@ python inspect.py --image path/to/product.jpg --model patchcore --threshold 0.5
 
 ---
 
+## ⚡ AMD Token Factory Integration (ROCm Cloud AI)
+
+VisionInspect AI integrates AMD Radeon Cloud Token Factory models hosted on AMD Instinct accelerators to deliver hybrid Edge-CV + Cloud-VLM intelligence:
+
+| Capability | AMD Cloud Model | Project Location | Purpose |
+|------------|-----------------|------------------|---------|
+| **Multimodal Defect Diagnosis** | `MiniCPM-V-4.7-35B-A3B` / `DeepSeek-V4-Flash-Vision-Exp` | Inspection Station (`/api/amd/diagnose`) | Natural-language flaw classification, severity, & root cause |
+| **Operator Triage Copilot** | `Qwen3.8-Flash-Next` / `DeepSeek-V4.1-Flash` | Human Review Queue (`/api/amd/copilot`) | Real-time interactive inspection assistance & tolerance checks |
+| **Executive QA Shift Auditing** | `Qwen3.8-27B` | Benchmarks Tab (`/api/amd/report`) | Automated ISO-9001 compliance shift reporting |
+
+Configure via `.env`:
+```env
+AMD_API_KEY=your_key_here
+AMD_API_BASE_URL=https://developer.amd.com.cn/radeon/api/v1
+AMD_VISION_MODEL=MiniCPM-V-4.7-35B-A3B
+AMD_TEXT_MODEL=Qwen3.8-Flash-Next
+AMD_REPORT_MODEL=Qwen3.8-27B
+```
+
+---
+
 ## License
 MIT License — see [LICENSE](LICENSE)

@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import {
   ShieldAlert, ShieldCheck, AlertTriangle, Cpu, Layers, BarChart3,
   CheckCircle2, XCircle, Eye, RefreshCw, Upload, Download, ArrowRight,
-  Sliders, Info, FileText, Check, HelpCircle, Activity, Box, Sparkles
+  Sliders, Info, FileText, Check, HelpCircle, Activity, Box, Sparkles,
+  Bot, MessageSquare, Send, Copy, Zap
 } from 'lucide-react';
 
 const CATEGORIES = [
@@ -23,6 +24,7 @@ export default function App() {
   const [selectedCategory, setSelectedCategory] = useState('bottle');
   const [samples, setSamples] = useState([]);
   const [selectedSample, setSelectedSample] = useState(null);
+  const [categoriesInfo, setCategoriesInfo] = useState([]);
 
   // Inspection settings
   const [useConformal, setUseConformal] = useState(true);
@@ -49,6 +51,18 @@ export default function App() {
   const [benchmarksData, setBenchmarksData] = useState(null);
   const [telemetryData, setTelemetryData] = useState(null);
 
+  // AMD Token Factory Cloud AI State
+  const [amdStatus, setAmdStatus] = useState(null);
+  const [isAmdDiagnosing, setIsAmdDiagnosing] = useState(false);
+  const [amdDiagnosis, setAmdDiagnosis] = useState(null);
+  const [copilotThreads, setCopilotThreads] = useState({}); // itemId -> array of {role, content, latency}
+  const [copilotInputs, setCopilotInputs] = useState({});
+  const [isCopilotThinking, setIsCopilotThinking] = useState({});
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  const [amdReport, setAmdReport] = useState(null);
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [copiedReport, setCopiedReport] = useState(false);
+
   // Fetch initial status & samples
   useEffect(() => {
     fetch('/api/status')
@@ -59,7 +73,15 @@ export default function App() {
     fetchQueue();
     fetchBenchmarks();
     fetchTelemetry();
+    fetchAmdStatus();
   }, []);
+
+  const fetchAmdStatus = () => {
+    fetch('/api/amd/status')
+      .then(res => res.json())
+      .then(data => setAmdStatus(data))
+      .catch(err => console.error("AMD API status error:", err));
+  };
 
   // Update samples when category changes
   useEffect(() => {
@@ -73,19 +95,25 @@ export default function App() {
       })
       .catch(err => console.error("Error loading samples:", err));
 
-    // Update default thresholds for category
+    // Update default thresholds and model availability for category
     fetch('/api/models')
       .then(res => res.json())
       .then(data => {
-        const catInfo = data.categories.find(c => c.id === selectedCategory);
-        if (catInfo && catInfo.calibrated_thresholds) {
-          setThreshold(catInfo.calibrated_thresholds.threshold);
-          setTNormal(catInfo.calibrated_thresholds.t_normal);
-          setTAnomaly(catInfo.calibrated_thresholds.t_anomaly);
+        setCategoriesInfo(data.categories || []);
+        const catInfo = data.categories?.find(c => c.id === selectedCategory);
+        if (catInfo) {
+          if (catInfo.calibrated_thresholds) {
+            setThreshold(catInfo.calibrated_thresholds.threshold);
+            setTNormal(catInfo.calibrated_thresholds.t_normal);
+            setTAnomaly(catInfo.calibrated_thresholds.t_anomaly);
+          }
+          if (catInfo.models_available && !catInfo.models_available[selectedModel]) {
+            setSelectedModel('autoencoder');
+          }
         }
       })
       .catch(() => {});
-  }, [selectedCategory]);
+  }, [selectedCategory, selectedModel]);
 
   const fetchQueue = () => {
     fetch('/api/review-queue')
@@ -130,6 +158,7 @@ export default function App() {
     }
 
     setIsInspecting(true);
+    setAmdDiagnosis(null);
     const formData = new FormData();
     if (selectedImageFile) {
       formData.append('file', selectedImageFile);
@@ -167,6 +196,101 @@ export default function App() {
       alert("Inspection Error: " + error.message);
     } finally {
       setIsInspecting(false);
+    }
+  };
+
+  const handleRunAmdDiagnosis = async () => {
+    if (!inspectionResult) return;
+    setIsAmdDiagnosing(true);
+    const formData = new FormData();
+    const imgData = inspectionResult.images.overlay || inspectionResult.images.original;
+    formData.append('image_b64', imgData);
+    formData.append('category', selectedCategory);
+    formData.append('anomaly_score', inspectionResult.score);
+    formData.append('verdict', inspectionResult.verdict);
+    formData.append('regions_json', JSON.stringify(inspectionResult.regions || []));
+
+    try {
+      const resp = await fetch('/api/amd/diagnose', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.detail || "AMD VLM Diagnosis failed");
+      }
+      const data = await resp.json();
+      setAmdDiagnosis(data);
+    } catch (e) {
+      alert("AMD Diagnosis Error: " + e.message);
+    } finally {
+      setIsAmdDiagnosing(false);
+    }
+  };
+
+  const handleSendCopilotMessage = async (itemId, queryText, anomalyScore) => {
+    const text = queryText || copilotInputs[itemId];
+    if (!text || !text.trim()) return;
+
+    const currentThread = copilotThreads[itemId] || [];
+    const updatedThread = [...currentThread, { role: 'user', content: text }];
+    setCopilotThreads(prev => ({ ...prev, [itemId]: updatedThread }));
+    setCopilotInputs(prev => ({ ...prev, [itemId]: '' }));
+    setIsCopilotThinking(prev => ({ ...prev, [itemId]: true }));
+
+    const formData = new FormData();
+    formData.append('query', text);
+    formData.append('category', selectedCategory);
+    if (anomalyScore) formData.append('anomaly_score', anomalyScore);
+    formData.append('history_json', JSON.stringify(currentThread));
+
+    try {
+      const resp = await fetch('/api/amd/copilot', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.detail || "Copilot response failed");
+      }
+      const data = await resp.json();
+      setCopilotThreads(prev => ({
+        ...prev,
+        [itemId]: [...updatedThread, { role: 'assistant', content: data.reply, latency: data.latency_ms, model: data.model_used }]
+      }));
+    } catch (e) {
+      setCopilotThreads(prev => ({
+        ...prev,
+        [itemId]: [...updatedThread, { role: 'assistant', content: `Error: ${e.message}` }]
+      }));
+    } finally {
+      setIsCopilotThinking(prev => ({ ...prev, [itemId]: false }));
+    }
+  };
+
+  const handleGenerateAmdReport = async () => {
+    setIsGeneratingReport(true);
+    setShowReportModal(true);
+    setAmdReport(null);
+    setCopiedReport(false);
+    const formData = new FormData();
+    formData.append('category', selectedCategory);
+
+    try {
+      const resp = await fetch('/api/amd/report', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.detail || "Report generation failed");
+      }
+      const data = await resp.json();
+      setAmdReport(data);
+    } catch (e) {
+      alert("Report Generation Error: " + e.message);
+    } finally {
+      setIsGeneratingReport(false);
     }
   };
 
@@ -259,8 +383,18 @@ export default function App() {
             </button>
           </nav>
 
-          {/* Hardware Telemetry Badge */}
+          {/* Hardware & AMD Cloud AI Telemetry Badge */}
           <div className="hidden lg:flex items-center gap-3 text-xs border-l border-slate-800 pl-4">
+            {amdStatus && amdStatus.online && (
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-rose-950/40 border border-rose-500/30 text-[11px]">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+                </span>
+                <span className="font-bold text-rose-300">AMD Token Factory:</span>
+                <span className="text-slate-300 font-mono">12 Cloud Models</span>
+              </div>
+            )}
             <div className="flex items-center gap-1.5">
               <span className="relative flex h-2 w-2">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
@@ -323,30 +457,46 @@ export default function App() {
                       Anomaly Detection Architecture
                     </label>
                     <div className="grid grid-cols-1 gap-2">
-                      {MODELS.map((m) => (
-                        <button
-                          key={m.id}
-                          onClick={() => setSelectedModel(m.id)}
-                          className={`text-left p-3 rounded-xl border transition-all flex items-center justify-between ${
-                            selectedModel === m.id
-                              ? 'border-blue-500 bg-blue-950/30 ring-1 ring-blue-500'
-                              : 'border-slate-800 bg-slate-950/50 hover:border-slate-700'
-                          }`}
-                        >
-                          <div>
-                            <div className="font-semibold text-xs text-white flex items-center gap-1.5">
-                              {m.name}
-                              <span className="text-[10px] font-mono px-1.5 py-0.2 bg-blue-900/60 text-blue-300 rounded border border-blue-700/40">
-                                {m.badge}
-                              </span>
+                      {MODELS.map((m) => {
+                        const currentCat = categoriesInfo.find(c => c.id === selectedCategory);
+                        const isAvailable = currentCat?.models_available?.[m.id] ?? (m.id === 'autoencoder' || selectedCategory === 'bottle');
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() => isAvailable && setSelectedModel(m.id)}
+                            disabled={!isAvailable}
+                            className={`text-left p-3 rounded-xl border transition-all flex items-center justify-between ${
+                              !isAvailable
+                                ? 'opacity-40 border-slate-800 bg-slate-950/20 cursor-not-allowed'
+                                : selectedModel === m.id
+                                ? 'border-blue-500 bg-blue-950/30 ring-1 ring-blue-500 cursor-pointer'
+                                : 'border-slate-800 bg-slate-950/50 hover:border-slate-700 cursor-pointer'
+                            }`}
+                          >
+                            <div>
+                              <div className="font-semibold text-xs text-white flex items-center gap-1.5">
+                                {m.name}
+                                <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded border ${
+                                  isAvailable
+                                    ? 'bg-blue-900/60 text-blue-300 border-blue-700/40'
+                                    : 'bg-amber-950/60 text-amber-400 border-amber-800/40'
+                                }`}>
+                                  {isAvailable ? (m.id === 'autoencoder' ? 'Trained (15/15)' : 'Ready') : 'Bottle Only'}
+                                </span>
+                              </div>
+                              <div className="text-[11px] text-slate-400 mt-0.5">
+                                {isAvailable
+                                  ? m.desc
+                                  : `Trained for Bottle only. Select ConvAutoencoder for ${selectedCategory.replace('_', ' ')}.`}
+                              </div>
                             </div>
-                            <div className="text-[11px] text-slate-400 mt-0.5">{m.desc}</div>
-                          </div>
-                          {selectedModel === m.id && (
-                            <CheckCircle2 className="h-4 w-4 text-blue-400 shrink-0" />
-                          )}
-                        </button>
-                      ))}
+                            {selectedModel === m.id && isAvailable && (
+                              <CheckCircle2 className="h-4 w-4 text-blue-400 shrink-0" />
+                            )}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
@@ -699,6 +849,65 @@ export default function App() {
                     </div>
                   </div>
                 )}
+
+                {/* AMD Token Factory VLM Visual Diagnosis Card */}
+                {inspectionResult && (
+                  <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 border border-rose-500/30 rounded-2xl p-5 shadow-2xl space-y-3 mt-4">
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+                      <div className="flex items-center gap-2">
+                        <div className="p-2 rounded-xl bg-rose-600/20 text-rose-400 border border-rose-500/30">
+                          <Sparkles className="h-4 w-4" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h4 className="text-xs font-bold text-slate-100 uppercase tracking-wider">
+                              AMD Cloud VLM Defect Diagnosis
+                            </h4>
+                            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                              MiniCPM-V 35B
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Multimodal visual reasoning hosted on AMD Instinct accelerators
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={handleRunAmdDiagnosis}
+                        disabled={isAmdDiagnosing}
+                        className="px-3.5 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-500 hover:to-amber-500 text-white shadow-lg shadow-rose-600/30 flex items-center gap-1.5 disabled:opacity-50 cursor-pointer transition-all"
+                      >
+                        {isAmdDiagnosing ? (
+                          <>
+                            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                            <span>Diagnosing on AMD Cloud...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Zap className="h-3.5 w-3.5" />
+                            <span>{amdDiagnosis ? 'Re-Run AMD Diagnosis' : 'Diagnose with AMD AI'}</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    {amdDiagnosis ? (
+                      <div className="space-y-3 pt-1">
+                        <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
+                          <span>Model: <strong className="text-rose-400">{amdDiagnosis.model_used}</strong></span>
+                          <span>Latency: <strong className="text-cyan-400">{amdDiagnosis.latency_ms} ms</strong></span>
+                        </div>
+                        <div className="text-xs text-slate-200 leading-relaxed bg-slate-950/80 p-4 rounded-xl border border-slate-800 font-sans whitespace-pre-line">
+                          {amdDiagnosis.diagnosis}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center py-3 text-xs text-slate-500">
+                        Click <strong className="text-rose-400 font-semibold">"Diagnose with AMD AI"</strong> to receive an instant natural-language root cause &amp; severity assessment directly from AMD Instinct GPUs.
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -771,6 +980,85 @@ export default function App() {
                             <span className="ml-2 px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 font-mono">
                               Resolved: {item.reviewer_label}
                             </span>
+                          )}
+                        </div>
+
+                        {/* AMD Operator Copilot Chat Helper */}
+                        <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2 mt-2">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="font-bold text-rose-300 flex items-center gap-1">
+                              <Bot className="h-3.5 w-3.5 text-rose-400" />
+                              AMD Copilot (Qwen 3.8)
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono">Real-time Triage</span>
+                          </div>
+
+                          {/* Quick Inquiry Pills */}
+                          {!item.reviewer_label && (
+                            <div className="flex flex-wrap gap-1">
+                              <button
+                                type="button"
+                                onClick={() => handleSendCopilotMessage(item.item_id, `Why was this ${selectedCategory} flagged?`, item.anomaly_score)}
+                                className="text-[10px] px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors"
+                              >
+                                Why flagged?
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSendCopilotMessage(item.item_id, `What is standard tolerance for ${selectedCategory}?`, item.anomaly_score)}
+                                className="text-[10px] px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors"
+                              >
+                                Standard tolerance?
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Chat Thread Messages */}
+                          {copilotThreads[item.item_id] && copilotThreads[item.item_id].length > 0 && (
+                            <div className="max-h-32 overflow-y-auto space-y-1.5 p-2 bg-slate-900/60 rounded-lg text-[11px]">
+                              {copilotThreads[item.item_id].map((msg, idx) => (
+                                <div key={idx} className={msg.role === 'user' ? 'text-cyan-300' : 'text-slate-200'}>
+                                  <strong className="text-[10px] uppercase font-mono opacity-70">
+                                    {msg.role === 'user' ? 'You: ' : 'AMD AI: '}
+                                  </strong>
+                                  <span>{msg.content}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Thinking Indicator */}
+                          {isCopilotThinking[item.item_id] && (
+                            <div className="flex items-center gap-1.5 text-[10px] text-rose-400">
+                              <RefreshCw className="h-3 w-3 animate-spin" />
+                              <span>Consulting AMD Cloud Model...</span>
+                            </div>
+                          )}
+
+                          {/* Input Bar */}
+                          {!item.reviewer_label && (
+                            <div className="flex gap-1">
+                              <input
+                                type="text"
+                                placeholder="Ask AMD Copilot..."
+                                value={copilotInputs[item.item_id] || ""}
+                                onChange={(e) => setCopilotInputs({ ...copilotInputs, [item.item_id]: e.target.value })}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    handleSendCopilotMessage(item.item_id, null, item.anomaly_score);
+                                  }
+                                }}
+                                className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-rose-500"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleSendCopilotMessage(item.item_id, null, item.anomaly_score)}
+                                className="p-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center cursor-pointer"
+                              >
+                                <Send className="h-3 w-3" />
+                              </button>
+                            </div>
                           )}
                         </div>
 
@@ -858,15 +1146,34 @@ export default function App() {
               </div>
             </div>
 
-            {/* Benchmark Table */}
+            {/* Benchmark Table & QA Audit Header */}
             <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
-              <div className="p-5 border-b border-slate-800 flex justify-between items-center">
-                <h3 className="font-bold text-sm uppercase tracking-wider text-slate-300">
-                  MVTec AD Benchmark Breakdown (Selected Categories)
-                </h3>
-                <span className="text-xs font-mono text-cyan-400 bg-cyan-950/50 px-2.5 py-1 rounded-md border border-cyan-800/40">
-                  AMD Instinct / Radeon NPU Optimized
-                </span>
+              <div className="p-5 border-b border-slate-800 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                <div>
+                  <h3 className="font-bold text-sm uppercase tracking-wider text-slate-300">
+                    MVTec AD Benchmark Breakdown (Selected Categories)
+                  </h3>
+                  <span className="text-xs font-mono text-cyan-400">
+                    AMD Instinct / Radeon NPU Optimized
+                  </span>
+                </div>
+                <button
+                  onClick={handleGenerateAmdReport}
+                  disabled={isGeneratingReport}
+                  className="px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-500 hover:to-amber-500 text-white shadow-lg shadow-rose-600/30 flex items-center gap-2 disabled:opacity-50 cursor-pointer transition-all"
+                >
+                  {isGeneratingReport ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                      <span>Synthesizing Audit Report...</span>
+                    </>
+                  ) : (
+                    <>
+                      <FileText className="h-4 w-4" />
+                      <span>Generate Shift QA Audit Report (AMD Qwen 27B)</span>
+                    </>
+                  )}
+                </button>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
@@ -901,6 +1208,80 @@ export default function App() {
                     )}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* AMD QA Audit Report Modal */}
+        {showReportModal && (
+          <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+              <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-950/50">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 rounded-lg bg-rose-600/20 text-rose-400">
+                    <FileText className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-100">
+                      Official Quality Assurance Shift Audit
+                    </h3>
+                    <p className="text-[11px] text-slate-400">
+                      Generated by AMD Token Factory &bull; Model: {amdReport?.model_used || "Qwen3.8-27B"}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowReportModal(false)}
+                  className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 text-xs"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="p-6 overflow-y-auto flex-1 font-mono text-xs text-slate-200 leading-relaxed whitespace-pre-wrap bg-slate-950/40">
+                {isGeneratingReport ? (
+                  <div className="py-16 text-center space-y-3">
+                    <RefreshCw className="h-8 w-8 text-rose-400 animate-spin mx-auto" />
+                    <p className="font-sans font-semibold text-sm text-slate-300">
+                      Compiling ISO-9001 Compliance Metrics via AMD Qwen 27B...
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      Analyzing shift false alarms, escape risk, and conformal bounds
+                    </p>
+                  </div>
+                ) : amdReport ? (
+                  amdReport.report_markdown
+                ) : (
+                  "No report generated."
+                )}
+              </div>
+
+              <div className="p-4 border-t border-slate-800 bg-slate-950/50 flex justify-between items-center">
+                <div className="text-[11px] text-slate-500 font-mono">
+                  {amdReport && `Generation latency: ${amdReport.latency_ms} ms on AMD Instinct`}
+                </div>
+                <div className="flex items-center gap-2">
+                  {amdReport && (
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(amdReport.report_markdown);
+                        setCopiedReport(true);
+                        setTimeout(() => setCopiedReport(false), 2000);
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center gap-1.5"
+                    >
+                      {copiedReport ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                      <span>{copiedReport ? "Copied!" : "Copy Markdown"}</span>
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setShowReportModal(false)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white"
+                  >
+                    Close
+                  </button>
+                </div>
               </div>
             </div>
           </div>
